@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Home Designer — 2D / 3D</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">🏠 Home Designer</div>
+    <div class="view-toggle">
+      <button id="btn-2d" class="active">2D Plan</button>
+      <button id="btn-3d">3D View</button>
+    </div>
+    <div class="top-actions">
+      <button id="btn-starter" title="Load the pre-designed home">Load Starter Home</button>
+      <button id="btn-save">Save</button>
+      <button id="btn-load">Open</button>
+      <button id="btn-export">Export JSON</button>
+      <button id="btn-import">Import JSON</button>
+      <button id="btn-clear">Clear</button>
+      <input type="file" id="file-input" accept="application/json" hidden />
+    </div>
+  </header>
+
+  <div id="workspace">
+    <!-- Left tool rail (2D only) -->
+    <aside id="toolbar">
+      <button class="tool active" data-tool="select" title="Select / Move (V)">⬚<span>Select</span></button>
+      <button class="tool" data-tool="wall" title="Draw walls (W)">／<span>Wall</span></button>
+      <button class="tool" data-tool="door" title="Add door (D)">🚪<span>Door</span></button>
+      <button class="tool" data-tool="window" title="Add window (N)">🪟<span>Window</span></button>
+      <button class="tool" data-tool="room" title="Define room (R)">▦<span>Room</span></button>
+      <button class="tool" data-tool="delete" title="Delete (X)">🗑<span>Delete</span></button>
+      <div class="rail-sep"></div>
+      <button class="tool" data-tool="fit" title="Fit to screen">⤢<span>Fit</span></button>
+    </aside>
+
+    <!-- Center stage -->
+    <main id="stage">
+      <canvas id="canvas2d"></canvas>
+      <div id="canvas3d"></div>
+      <div id="hint"></div>
+    </main>
+
+    <!-- Right panel -->
+    <aside id="panel">
+      <div class="panel-tabs">
+        <button class="ptab active" data-tab="props">Properties</button>
+        <button class="ptab" data-tab="library">Library</button>
+        <button class="ptab" data-tab="design3d">3D Options</button>
+      </div>
+      <div class="panel-body">
+        <section class="ptab-body active" id="tab-props"></section>
+        <section class="ptab-body" id="tab-library"></section>
+        <section class="ptab-body" id="tab-design3d"></section>
+      </div>
+    </aside>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
