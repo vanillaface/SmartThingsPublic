@@ -13,6 +13,7 @@ const stage = $('#stage');
 const editor = new Editor2D($('#canvas2d'), {
   onSelect: sel => renderProps(sel),
   onHint: text => { $('#hint').textContent = text; },
+  onDrawState: drawing => { $('#btn-finish').hidden = !drawing; },
 });
 const viewer = new Viewer3D($('#canvas3d'));
 
@@ -76,6 +77,11 @@ document.querySelectorAll('.tool').forEach(btn => {
     editor.setTool(t);
   };
 });
+$('#btn-snap').onclick = () => {
+  editor.setSnapEnabled(!editor.snapEnabled);
+  $('#btn-snap').classList.toggle('active', editor.snapEnabled);
+};
+$('#btn-finish').onclick = () => editor.finishDrawing();
 
 // ---- panel tabs -------------------------------------------------------
 document.querySelectorAll('.ptab').forEach(tab => {

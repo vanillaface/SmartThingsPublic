@@ -13,6 +13,7 @@
 
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+html { touch-action: manipulation; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg);
@@ -20,6 +21,8 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  overscroll-behavior: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 button {
@@ -61,16 +64,18 @@ button.active { background: var(--accent); border-color: var(--accent); color: #
   gap: 4px;
   padding: 8px 6px;
 }
-.tool {
+.tool, .rail-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
   font-size: 18px;
   padding: 8px 2px;
+  min-height: 44px;
 }
-.tool span { font-size: 10px; color: var(--muted); }
-.tool.active span { color: #fff; }
+.tool span, .rail-btn span { font-size: 10px; color: var(--muted); }
+.tool.active span, .rail-btn.active span { color: #fff; }
+.tool[hidden], .rail-btn[hidden] { display: none; }
 .rail-sep { height: 1px; background: var(--line); margin: 4px 0; }
 
 #stage { flex: 1; position: relative; min-width: 0; background: #11151a; }
@@ -122,8 +127,8 @@ button.active { background: var(--accent); border-color: var(--accent); color: #
   border: 1px solid var(--line);
   color: var(--text);
   border-radius: 6px;
-  padding: 7px 8px;
-  font-size: 13px;
+  padding: 9px 8px;
+  font-size: 16px; /* iOS Safari auto-zooms inputs below 16px on focus */
 }
 .field-row { display: flex; gap: 8px; }
 .field-row .field { flex: 1; }
@@ -159,4 +164,32 @@ button.active { background: var(--accent); border-color: var(--accent); color: #
 kbd {
   background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 4px; padding: 1px 5px; font-size: 11px;
+}
+
+/* Touch devices: fatter tap targets everywhere (fingers aren't a mouse cursor) */
+@media (pointer: coarse) {
+  button { padding: 9px 12px; font-size: 14px; }
+  .tool, .rail-btn { font-size: 22px; padding: 10px 2px; min-height: 50px; }
+  .ptab { padding: 13px 4px; }
+  .lib-item { padding: 14px 6px; }
+  .swatch { width: 32px; height: 32px; }
+}
+
+/* Safe-area awareness for notches / home indicators (iPad/iPhone) */
+#topbar { padding-top: max(8px, env(safe-area-inset-top)); }
+#toolbar { padding-left: max(6px, env(safe-area-inset-left)); }
+#panel { padding-right: max(0px, env(safe-area-inset-right)); }
+
+/* Narrower viewports (iPad portrait/split-view): trim the side rails so the
+   plan itself keeps enough room to actually draw in */
+@media (max-width: 860px) {
+  #toolbar { width: 64px; }
+  .tool span, .rail-btn span { display: none; }
+  #panel { width: 230px; }
+  .lib-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .brand { display: none; }
+  #topbar { gap: 8px; padding: 6px 8px; }
+  .top-actions button { padding: 8px 8px; font-size: 12px; }
 }

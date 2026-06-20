@@ -7,17 +7,19 @@ import { state, uid, snapshot, emitChange, wallById, wallLength,
 import { FURNITURE, FLOOR_MATERIALS, hex } from './library.js';
 
 export class Editor2D {
-  constructor(canvas, { onSelect, onHint }) {
+  constructor(canvas, { onSelect, onHint, onDrawState }) {
     this.cv = canvas;
     this.ctx = canvas.getContext('2d');
     this.onSelect = onSelect;
     this.onHint = onHint;
+    this.onDrawState = onDrawState;
 
     this.scale = 14;          // px per foot
     this.cam = { x: 19, y: 14 }; // world point at viewport center
     this.tool = 'select';
     this.selection = null;
-    this.gridStep = 0.5;
+    this.gridStep = 0.5;      // 6 inches
+    this.snapEnabled = true;
 
     // interaction state
     this.mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false };
@@ -26,10 +28,28 @@ export class Editor2D {
     this.roomPts = null;      // room polygon in progress
     this.hoverWall = null;    // for door/window placement
 
+    // multi-touch (pinch-zoom / two-finger pan) state
+    this.pointers = new Map(); // pointerId -> {x, y} in element-relative px
+    this.pinch = null;         // { startDist, startScale, startMid, startCam }
+    this.lastPointerType = null;
+    this._touchStart = null;  // { e, pointerId, x, y } - a touch tap not yet committed
+
     this._bind();
     this._resize();
     window.addEventListener('resize', () => { this._resize(); this.render(); });
   }
+
+  setSnapEnabled(on) { this.snapEnabled = on; this.render(); }
+
+  isDrawing() { return !!(this.chain || (this.roomPts && this.roomPts.length)); }
+  _notifyDrawState() { this.onDrawState && this.onDrawState(this.isDrawing()); }
+  finishDrawing() { this._finishChainOrRoom(); }
+
+  // alt key inverts whatever the current snap setting is (works for mouse;
+  // touch has no alt key, so the toolbar toggle is the only way to flip it there)
+  _useGrid(e) { return e && e.altKey ? !this.snapEnabled : this.snapEnabled; }
+  // fingers are much fatter than a mouse cursor - widen hit/snap thresholds for touch
+  _hitMul() { return this.lastPointerType === 'touch' ? 1.6 : 1; }
 
   // --- coordinate transforms ------------------------------------------
   toScreen(wx, wy) {
@@ -68,17 +88,18 @@ export class Editor2D {
     this.hoverWall = null;
     if (tool !== 'select') this.select(null);
     this._hint();
+    this._notifyDrawState();
     this.render();
   }
 
   _hint() {
     const h = {
-      select: 'Click to select. Drag to move. Drag empty space to pan, scroll to zoom.',
-      wall:   'Click to place wall points. Double-click or Esc to finish the chain.',
-      door:   'Click on a wall to drop a door.',
-      window: 'Click on a wall to drop a window.',
-      room:   'Click to outline a room. Double-click or Enter to close it.',
-      delete: 'Click an item to delete it.',
+      select: 'Tap to select. Drag to move. Drag empty space to pan, pinch to zoom.',
+      wall:   'Tap to place wall points. Tap Finish (or double-click / Enter) to end the chain.',
+      door:   'Tap on a wall to drop a door.',
+      window: 'Tap on a wall to drop a window.',
+      room:   'Tap to outline a room. Tap Finish (or double-click / Enter) to close it.',
+      delete: 'Tap an item to delete it.',
     }[this.tool] || '';
     this.onHint && this.onHint(h);
   }
@@ -107,6 +128,7 @@ export class Editor2D {
 
   // --- hit testing -----------------------------------------------------
   hitFurniture(wx, wy) {
+    const pad = this.lastPointerType === 'touch' ? 0.35 : 0;
     for (let i = state.furniture.length - 1; i >= 0; i--) {
       const f = state.furniture[i];
       const def = FURNITURE[f.cat]; if (!def) continue;
@@ -114,23 +136,24 @@ export class Editor2D {
       const dx = wx - f.x, dy = wy - f.y;
       const lx = dx * Math.cos(a) - dy * Math.sin(a);
       const ly = dx * Math.sin(a) + dy * Math.cos(a);
-      if (Math.abs(lx) <= def.w / 2 && Math.abs(ly) <= def.d / 2)
+      if (Math.abs(lx) <= def.w / 2 + pad && Math.abs(ly) <= def.d / 2 + pad)
         return { type: 'furniture', id: f.id };
     }
     return null;
   }
   hitOpening(wx, wy) {
+    const mul = this._hitMul();
     for (const o of state.openings) {
       const w = wallById(o.wallId); if (!w) continue;
       const len = wallLength(w); const dx = (w.x2 - w.x1) / len, dy = (w.y2 - w.y1) / len;
       const cx = w.x1 + dx * o.pos, cy = w.y1 + dy * o.pos;
-      if (Math.hypot(wx - cx, wy - cy) < Math.max(o.width / 2, 1))
+      if (Math.hypot(wx - cx, wy - cy) < Math.max(o.width / 2, 1) * mul)
         return { type: 'opening', id: o.id };
     }
     return null;
   }
   hitWall(wx, wy) {
-    const n = nearestWall(wx, wy, 0.9);
+    const n = nearestWall(wx, wy, 0.9 * this._hitMul());
     return n ? { type: 'wall', id: n.wall.id } : null;
   }
   hitRoom(wx, wy) {
@@ -150,6 +173,7 @@ export class Editor2D {
     cv.addEventListener('pointerdown', e => this._down(e));
     cv.addEventListener('pointermove', e => this._move(e));
     window.addEventListener('pointerup', e => this._up(e));
+    window.addEventListener('pointercancel', e => this._cancel(e));
     cv.addEventListener('dblclick', e => this._dbl(e));
     cv.addEventListener('contextmenu', e => { e.preventDefault(); this._finishChainOrRoom(); });
     cv.addEventListener('wheel', e => this._wheel(e), { passive: false });
@@ -157,6 +181,7 @@ export class Editor2D {
   }
 
   _updMouse(e) {
+    this.lastPointerType = e.pointerType || this.lastPointerType;
     const r = this.cv.getBoundingClientRect();
     this.mouse.x = e.clientX - r.left;
     this.mouse.y = e.clientY - r.top;
@@ -165,11 +190,34 @@ export class Editor2D {
   }
 
   _down(e) {
-    this.cv.setPointerCapture(e.pointerId);
+    try { this.cv.setPointerCapture(e.pointerId); } catch { /* no-op: not all synthetic/edge-case pointers can be captured */ }
+    const r = this.cv.getBoundingClientRect();
+    this.pointers.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    this.lastPointerType = e.pointerType;
+
+    if (this.pointers.size >= 2) {
+      // a second finger landed - this is a pinch/pan gesture, not a tap action
+      this._touchStart = null;
+      this.drag = null;
+      this._beginPinch();
+      return;
+    }
+
+    if (e.pointerType === 'touch') {
+      // Don't act yet: a second finger could still land (pinch) or the finger
+      // could turn into a drag. Commit only once we know which on move/up.
+      this._touchStart = { e, pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
+    this._performDown(e);
+  }
+
+  _performDown(e) {
     this._updMouse(e);
     this.mouse.down = true;
     const { wx, wy } = this.mouse;
-    const sp = this.snapPt({ x: wx, y: wy }, !e.altKey);
+    const sp = this.snapPt({ x: wx, y: wy }, this._useGrid(e));
+    const mul = this._hitMul();
 
     if (this.tool === 'select' || this.tool === 'delete') {
       const hit = this.hitAny(wx, wy);
@@ -193,22 +241,57 @@ export class Editor2D {
         this.chain = { ...sp };
         emitChange();
       }
+      this._notifyDrawState();
     } else if (this.tool === 'room') {
       if (!this.roomPts) this.roomPts = [];
       this.roomPts.push({ x: sp.x, y: sp.y });
+      this._notifyDrawState();
     } else if (this.tool === 'door' || this.tool === 'window') {
-      const n = nearestWall(wx, wy, 2.0);
+      const n = nearestWall(wx, wy, 2.0 * mul);
       if (n) {
         snapshot();
         const isWin = this.tool === 'window';
+        let pos = n.t * wallLength(n.wall);
+        if (this._useGrid(e)) pos = this.snap(pos);
+        pos = Math.max(1, Math.min(wallLength(n.wall) - 1, pos));
         state.openings.push({
           id: uid('o'), wallId: n.wall.id, type: this.tool,
-          pos: Math.max(1, Math.min(wallLength(n.wall) - 1, n.t * wallLength(n.wall))),
-          width: isWin ? 4 : 3, height: isWin ? 4 : 6.8, sill: isWin ? 2.5 : 0,
+          pos, width: isWin ? 4 : 3, height: isWin ? 4 : 6.8, sill: isWin ? 2.5 : 0,
         });
         emitChange();
       }
     }
+    this.render();
+  }
+
+  _beginPinch() {
+    const pts = [...this.pointers.values()];
+    if (pts.length < 2) return;
+    const [a, b] = pts;
+    this.pinch = {
+      startDist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+      startScale: this.scale,
+      startMid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+      startCam: { ...this.cam },
+    };
+  }
+
+  _updatePinch() {
+    const pts = [...this.pointers.values()];
+    if (pts.length < 2 || !this.pinch) return;
+    const [a, b] = pts;
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const newScale = Math.max(3, Math.min(80, this.pinch.startScale * (dist / this.pinch.startDist)));
+    // world point under the gesture's starting midpoint, computed with the starting cam/scale
+    const worldAtStart = {
+      x: (this.pinch.startMid.x - this.cv.clientWidth / 2) / this.pinch.startScale + this.pinch.startCam.x,
+      y: (this.pinch.startMid.y - this.cv.clientHeight / 2) / this.pinch.startScale + this.pinch.startCam.y,
+    };
+    this.scale = newScale;
+    // re-anchor so that point sits under the fingers' current midpoint (handles pan + zoom together)
+    this.cam.x = worldAtStart.x - (mid.x - this.cv.clientWidth / 2) / newScale;
+    this.cam.y = worldAtStart.y - (mid.y - this.cv.clientHeight / 2) / newScale;
     this.render();
   }
 
@@ -221,6 +304,23 @@ export class Editor2D {
   }
 
   _move(e) {
+    if (this.pointers.has(e.pointerId)) {
+      const r = this.cv.getBoundingClientRect();
+      this.pointers.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
+    }
+    if (this.pointers.size >= 2) {
+      if (this.pinch) this._updatePinch();
+      return;
+    }
+
+    if (this._touchStart && this._touchStart.pointerId === e.pointerId) {
+      const dx = e.clientX - this._touchStart.x, dy = e.clientY - this._touchStart.y;
+      if (Math.hypot(dx, dy) <= 8) return; // still holding still - not a drag yet
+      const startEvent = this._touchStart.e;
+      this._touchStart = null;
+      this._performDown(startEvent); // now commits as a drag-start, anchored at the original touch point
+    }
+
     this._updMouse(e);
     const { wx, wy } = this.mouse;
 
@@ -234,7 +334,7 @@ export class Editor2D {
       }
       d.moved = true;
       let ddx = wx - d.startX, ddy = wy - d.startY;
-      if (!e.altKey) { ddx = this.snap(d.startX + ddx) - d.startX; ddy = this.snap(d.startY + ddy) - d.startY; }
+      if (this._useGrid(e)) { ddx = this.snap(d.startX + ddx) - d.startX; ddy = this.snap(d.startY + ddy) - d.startY; }
       if (d.kind === 'furniture') {
         const f = state.furniture.find(x => x.id === d.id);
         f.x = d.orig.x + ddx; f.y = d.orig.y + ddy;
@@ -249,29 +349,51 @@ export class Editor2D {
         const o = state.openings.find(x => x.id === d.id);
         const w = wallById(o.wallId);
         const p = projectOnWall(w, wx, wy);
-        o.pos = Math.max(o.width / 2, Math.min(wallLength(w) - o.width / 2, p.t * wallLength(w)));
+        let pos = p.t * wallLength(w);
+        if (this._useGrid(e)) pos = this.snap(pos);
+        o.pos = Math.max(o.width / 2, Math.min(wallLength(w) - o.width / 2, pos));
       }
       emitChange();
       return;
     }
 
     if (this.tool === 'door' || this.tool === 'window') {
-      this.hoverWall = nearestWall(wx, wy, 2.0);
+      this.hoverWall = nearestWall(wx, wy, 2.0 * this._hitMul());
       this.render(); return;
     }
     if (this.chain || this.roomPts) this.render();
   }
 
   _up(e) {
+    if (this._touchStart && this._touchStart.pointerId === e.pointerId) {
+      // finger lifted without ever moving past the drag threshold - it's a tap
+      const startEvent = this._touchStart.e;
+      this._touchStart = null;
+      this._performDown(startEvent);
+      this.pointers.delete(e.pointerId);
+      if (this.pointers.size < 2) this.pinch = null;
+      if (this.pointers.size === 0) { this.mouse.down = false; this.drag = null; }
+      return;
+    }
+    this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) this.pinch = null;
+    if (this.pointers.size > 0) return;
     this.mouse.down = false;
     if (this.drag && this.drag.kind !== 'pan' && this.drag.moved) emitChange();
     this.drag = null;
   }
 
+  _cancel(e) {
+    if (this._touchStart && this._touchStart.pointerId === e.pointerId) this._touchStart = null;
+    this.pointers.delete(e.pointerId);
+    if (this.pointers.size < 2) this.pinch = null;
+    if (this.pointers.size === 0) { this.mouse.down = false; this.drag = null; }
+  }
+
   _dbl() { this._finishChainOrRoom(); }
 
   _finishChainOrRoom() {
-    if (this.tool === 'wall' && this.chain) { this.chain = null; this.render(); }
+    if (this.tool === 'wall' && this.chain) { this.chain = null; this._notifyDrawState(); this.render(); }
     if (this.tool === 'room' && this.roomPts) {
       if (this.roomPts.length >= 3) {
         snapshot();
@@ -283,6 +405,7 @@ export class Editor2D {
         this.select({ type: 'room', id: r.id });
       }
       this.roomPts = null;
+      this._notifyDrawState();
       this.render();
     }
   }
@@ -320,7 +443,7 @@ export class Editor2D {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
     const map = { v: 'select', w: 'wall', d: 'door', n: 'window', r: 'room', x: 'delete' };
     if (map[e.key]) { this.setTool(map[e.key]); return; }
-    if (e.key === 'Escape') { this.chain = null; this.roomPts = null; this.select(null); this.render(); }
+    if (e.key === 'Escape') { this.chain = null; this.roomPts = null; this.select(null); this._notifyDrawState(); this.render(); }
     if (e.key === 'Enter') this._finishChainOrRoom();
     if ((e.key === 'Delete' || e.key === 'Backspace') && this.selection) this.deleteSelection();
     if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault();
@@ -330,7 +453,9 @@ export class Editor2D {
   addFurnitureAt(cat, sx, sy) {
     const w = this.toWorld(sx, sy);
     snapshot();
-    const f = { id: uid('f'), cat, x: this.snap(w.x), y: this.snap(w.y), rot: 0 };
+    const f = { id: uid('f'), cat,
+      x: this.snapEnabled ? this.snap(w.x) : w.x,
+      y: this.snapEnabled ? this.snap(w.y) : w.y, rot: 0 };
     state.furniture.push(f);
     emitChange();
     this.select({ type: 'furniture', id: f.id });
@@ -351,20 +476,29 @@ export class Editor2D {
   }
 
   _grid(ctx, W, H) {
-    const step = this.scale; // 1 ft
-    const major = 5;
+    // fine lines at the 6" (0.5 ft) snap resolution, falling back to whole-foot
+    // lines when zoomed out far enough that 6" lines would just be visual noise
+    const fine = this.gridStep;
+    const step = (fine * this.scale >= 6) ? fine : 1;
     const tl = this.toWorld(0, 0), br = this.toWorld(W, H);
-    const x0 = Math.floor(tl.x), x1 = Math.ceil(br.x);
-    const y0 = Math.floor(tl.y), y1 = Math.ceil(br.y);
-    ctx.lineWidth = 1;
-    for (let x = x0; x <= x1; x++) {
+    const i0 = Math.floor(tl.x / step), i1 = Math.ceil(br.x / step);
+    const j0 = Math.floor(tl.y / step), j1 = Math.ceil(br.y / step);
+    for (let i = i0; i <= i1; i++) {
+      const x = i * step;
+      const isFoot = Number.isInteger(x);
+      const isFive = isFoot && (Math.round(x) % 5 === 0);
       const s = this.toScreen(x, 0).x;
-      ctx.strokeStyle = (x % major === 0) ? '#2a323c' : '#1b2128';
+      ctx.strokeStyle = isFive ? '#3a4450' : isFoot ? '#262e37' : '#1a2026';
+      ctx.lineWidth = isFive ? 1.5 : 1;
       ctx.beginPath(); ctx.moveTo(s, 0); ctx.lineTo(s, H); ctx.stroke();
     }
-    for (let y = y0; y <= y1; y++) {
+    for (let j = j0; j <= j1; j++) {
+      const y = j * step;
+      const isFoot = Number.isInteger(y);
+      const isFive = isFoot && (Math.round(y) % 5 === 0);
       const s = this.toScreen(0, y).y;
-      ctx.strokeStyle = (y % major === 0) ? '#2a323c' : '#1b2128';
+      ctx.strokeStyle = isFive ? '#3a4450' : isFoot ? '#262e37' : '#1a2026';
+      ctx.lineWidth = isFive ? 1.5 : 1;
       ctx.beginPath(); ctx.moveTo(0, s); ctx.lineTo(W, s); ctx.stroke();
     }
   }
@@ -485,7 +619,7 @@ export class Editor2D {
     // wall chain rubber band
     if (this.tool === 'wall' && this.chain) {
       const a = this.toScreen(this.chain.x, this.chain.y);
-      const sp = this.snapPt({ x: this.mouse.wx, y: this.mouse.wy });
+      const sp = this.snapPt({ x: this.mouse.wx, y: this.mouse.wy }, this.snapEnabled);
       const b = this.toScreen(sp.x, sp.y);
       ctx.strokeStyle = '#4f9dde'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
@@ -499,7 +633,7 @@ export class Editor2D {
       ctx.strokeStyle = '#58b368'; ctx.lineWidth = 2;
       ctx.beginPath();
       this.roomPts.forEach((p, i) => { const s = this.toScreen(p.x, p.y); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
-      const sp = this.snapPt({ x: this.mouse.wx, y: this.mouse.wy });
+      const sp = this.snapPt({ x: this.mouse.wx, y: this.mouse.wy }, this.snapEnabled);
       const cur = this.toScreen(sp.x, sp.y); ctx.lineTo(cur.x, cur.y);
       ctx.stroke();
       this.roomPts.forEach(p => { const s = this.toScreen(p.x, p.y); ctx.fillStyle = '#58b368'; ctx.beginPath(); ctx.arc(s.x, s.y, 4, 0, 7); ctx.fill(); });
